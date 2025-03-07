@@ -2823,6 +2823,20 @@ int Transaction::try_action_reserve_currency(vm::CellSlice& cs, ActionPhase& ap,
   }
   int mode = rec.mode;
   LOG(INFO) << "in try_action_reserve_currency(" << mode << ")";
+  if (cfg.extra_currency_v2) {
+    CurrencyCollection value;
+    if (!value.unpack(rec.currency)) {
+      LOG(DEBUG) << "invalid value in action_reserve_currency";
+      return -1;
+    }
+    if (!CurrencyCollection::remove_zero_extra_currencies(value.extra, cfg.size_limits.max_reserve_extra_currencies)) {
+      LOG(DEBUG) << "invalid extra currencies in action_reserve_currency: too many currencies (max "
+                 << cfg.size_limits.max_reserve_extra_currencies << ")";
+      // Dict should be valid, since it was checked in t_OutListNode.validate_ref, so error here means limit exceeded
+      return -1;
+    }
+    rec.currency = value.pack();
+  }
   CurrencyCollection reserve, newc;
   if (!reserve.validate_unpack(std::move(rec.currency))) {
     LOG(DEBUG) << "cannot parse currency field in action_reserve_currency";
@@ -2832,9 +2846,17 @@ int Transaction::try_action_reserve_currency(vm::CellSlice& cs, ActionPhase& ap,
              << ", balance=" << ap.remaining_balance.to_str() << ", original balance=" << original_balance.to_str();
   if (mode & 4) {
     if (mode & 8) {
-      reserve = original_balance - reserve;
+      if (cfg.extra_currency_v2) {
+        reserve.grams = original_balance.grams - reserve.grams;
+      } else {
+        reserve = original_balance - reserve;
+      }
     } else {
-      reserve += original_balance;
+      if (cfg.extra_currency_v2) {
+        reserve.grams += original_balance.grams;
+      } else {
+        reserve += original_balance;
+      }
     }
   } else if (mode & 8) {
     LOG(DEBUG) << "invalid reserve mode " << mode;
@@ -2847,7 +2869,7 @@ int Transaction::try_action_reserve_currency(vm::CellSlice& cs, ActionPhase& ap,
   if (mode & 2) {
     if (cfg.reserve_extra_enabled) {
       if (!reserve.clamp(ap.remaining_balance)) {
-        LOG(DEBUG) << "failed to clamp reserve amount" << mode;
+        LOG(DEBUG) << "failed to clamp reserve amount " << mode;
         return -1;
       }
     } else {
@@ -2868,7 +2890,11 @@ int Transaction::try_action_reserve_currency(vm::CellSlice& cs, ActionPhase& ap,
   newc.grams = ap.remaining_balance.grams - reserve.grams;
   if (mode & 1) {
     // leave only res_grams, reserve everything else
-    std::swap(newc, reserve);
+    if (cfg.extra_currency_v2) {
+      std::swap(newc.grams, reserve.grams);
+    } else {
+      std::swap(newc, reserve);
+    }
   }
   // set remaining_balance to new_grams and new_extra
   ap.remaining_balance = std::move(newc);
